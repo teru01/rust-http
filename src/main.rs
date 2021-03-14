@@ -25,8 +25,14 @@ fn handler(mut stream: net::TcpStream) -> Result<(), Box<dyn error::Error>> {
                 return Ok(());
             }
             n => {
-                print!("{}", str::from_utf8(&buf[..n])?);
-                stream.write_all(&buf[..n])?;
+                stream.write_all(
+                    b"HTTP/1.1 200 OK\r\n \
+Server: sample\r\n \
+Content-Length: 7\r\n \
+Connection: Close\r\n \
+Content-Type: text/plain;charset=utf8\r\n\r\n \
+hello\r\n",
+                )?;
             }
         }
     }
