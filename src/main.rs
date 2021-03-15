@@ -1,4 +1,5 @@
 use anyhow::{self, Result};
+use regex::Regex;
 use std::{
     collections::HashMap,
     fs::File,
@@ -8,6 +9,7 @@ use std::{
 };
 use thiserror::Error;
 
+// HTTPのステータスに基づくエラー型の定義。
 #[derive(Debug, Error)]
 enum HTTPError {
     #[error("{0} Bad Request")]
@@ -16,6 +18,7 @@ enum HTTPError {
     NotFound(u16),
 }
 
+// リクエストを表す構造体
 struct Request {
     version: String,
     path: String,
@@ -46,6 +49,7 @@ fn main() -> Result<()> {
     }
 }
 
+// TCPコネクションのハンドラ
 fn handler(stream: &mut TcpStream) -> Result<()> {
     println!("incoming connection from {}", stream.peer_addr()?);
     let request = match read_request(stream) {
@@ -66,6 +70,7 @@ fn handler(stream: &mut TcpStream) -> Result<()> {
     Ok(())
 }
 
+// エラーの種別に応じてステータスコードを選択し、レスポンスを返す
 fn handle_error(stream: &mut TcpStream, e: anyhow::Error) -> Result<()> {
     match e.downcast_ref::<HTTPError>() {
         Some(HTTPError::BadRequest(_)) => send_response(stream, "400", "Bad Request", Vec::new()),
@@ -74,40 +79,42 @@ fn handle_error(stream: &mut TcpStream, e: anyhow::Error) -> Result<()> {
     }
 }
 
+// リクエストを読み込む
 fn read_request(stream: &mut TcpStream) -> Result<Request> {
     let mut reader = BufReader::new(stream);
-    let mut buf = Vec::new();
-    let mut is_first_line = true;
     let mut request = Request::new();
-    while let Ok(n) = reader.read_until(b'\n', &mut buf) {
-        match n {
-            2 => {
-                if !is_first_line && buf[0] == b'\r' && buf[1] == b'\n' {
-                    break;
-                }
+    let request_line_pattern = Regex::new(r"^(.*) (.*) (HTTP/1.[0|1])\r\n$")?;
+    let header_pattern = Regex::new(r"^(.*): (.*)\r\n$")?;
+    let mut request_line = String::new();
+    reader.read_line(&mut request_line)?;
+    match request_line_pattern.captures(&request_line) {
+        Some(cap) => {
+            request.method = cap[1].to_string();
+            request.path = cap[2].to_string();
+            request.version = cap[3].to_string();
+        }
+        None => {
+            dbg!("request line");
+            return Err(HTTPError::BadRequest(400).into());
+        }
+    }
+    let mut header = String::new();
+    while reader.read_line(&mut header).is_ok() {
+        if header == "\r\n" {
+            break;
+        }
+        match header_pattern.captures(&header) {
+            Some(cap) => {
+                request
+                    .header
+                    .insert(cap[1].to_string(), cap[2].to_string());
             }
-            n => {
-                if is_first_line {
-                    let rline: Vec<&str> = str::from_utf8(&buf[0..n - 2])?.split(' ').collect();
-                    if rline.len() != 3 || !rline[2].starts_with("HTTP") {
-                        Err(HTTPError::BadRequest(400))?
-                    }
-                    request.method = rline[0].to_string();
-                    request.path = rline[1].to_string();
-                    request.version = rline[2].to_string();
-                    is_first_line = false;
-                } else {
-                    let header: Vec<&str> = str::from_utf8(&buf[0..n - 2])?
-                        .split(": ")
-                        .map(|s| s.trim())
-                        .collect();
-                    request
-                        .header
-                        .insert(header[0].to_string(), header[1].to_string());
-                }
+            None => {
+                dbg!("header");
+                return Err(HTTPError::BadRequest(400).into());
             }
         }
-        buf = Vec::new();
+        header = String::new();
     }
     if let Some(n) = request.header.get("Content-Length") {
         request.body = vec![0; n.parse()?];
@@ -116,6 +123,7 @@ fn read_request(stream: &mut TcpStream) -> Result<Request> {
     Ok(request)
 }
 
+// ローカルからファイルを読み込む
 fn create_response_body(request: &Request) -> Result<Vec<u8>> {
     let path = match request.path.as_str() {
         "/" => "/index.html",
@@ -123,7 +131,7 @@ fn create_response_body(request: &Request) -> Result<Vec<u8>> {
     };
     let file = match File::open(format!("./contents{}", path)) {
         Ok(f) => f,
-        Err(_) => Err(HTTPError::NotFound(404))?,
+        Err(_) => return Err(HTTPError::NotFound(404).into()),
     };
     let mut file_reader = BufReader::new(file);
     let mut resp_body = Vec::new();
@@ -131,6 +139,7 @@ fn create_response_body(request: &Request) -> Result<Vec<u8>> {
     Ok(resp_body)
 }
 
+// レスポンスを送信する
 fn send_response(
     stream: &mut TcpStream,
     status_code: &str,
