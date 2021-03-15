@@ -45,15 +45,10 @@ fn handler(mut stream: net::TcpStream) -> Result<()> {
     while let Ok(n) = reader.read_until(b'\n', &mut buf) {
         match n {
             0 => {
-                if is_first_line {
-                    println!("connection closed");
-                    return Ok(());
-                }
-                break;
+                println!("connection closed");
+                return Ok(());
             }
             n => {
-                dbg!(str::from_utf8(&buf[..n]));
-                dbg!(n);
                 if is_first_line {
                     let rline: Vec<&str> = str::from_utf8(&buf[0..n - 2])?.split(' ').collect();
                     request.method = rline[0].to_string();
@@ -68,7 +63,6 @@ fn handler(mut stream: net::TcpStream) -> Result<()> {
                         .split(": ")
                         .map(|s| s.trim())
                         .collect();
-                    dbg!(&header);
                     request
                         .header
                         .insert(header[0].to_string(), header[1].to_string());
@@ -82,7 +76,6 @@ fn handler(mut stream: net::TcpStream) -> Result<()> {
         reader.read_exact(&mut buf)?;
         request.body = buf;
     }
-    dbg!("read completed");
 
     let response_body = &request.body;
     let mut response = Vec::new();
@@ -95,6 +88,5 @@ fn handler(mut stream: net::TcpStream) -> Result<()> {
     ]
     .concat();
     stream.write_all(&resp_byte)?;
-    dbg!("response completed");
     Ok(())
 }
