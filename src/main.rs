@@ -1,7 +1,6 @@
 use anyhow::Result;
 use std::{
     collections::HashMap,
-    error,
     io::{self, prelude::*},
     net, str, thread,
 };
@@ -44,21 +43,24 @@ fn handler(mut stream: net::TcpStream) -> Result<()> {
     let mut request = Request::new();
     while let Ok(n) = reader.read_until(b'\n', &mut buf) {
         match n {
-            0 => {
-                println!("connection closed");
-                return Ok(());
+            2 => {
+                if !is_first_line && buf[0] == b'\r' && buf[1] == b'\n' {
+                    break;
+                }
             }
             n => {
                 if is_first_line {
                     let rline: Vec<&str> = str::from_utf8(&buf[0..n - 2])?.split(' ').collect();
+                    if rline.len() != 3 || !rline[2].starts_with("HTTP") {
+                        let mut s = stream.try_clone()?;
+                        send_response(&mut s, "400", "Bad Request", Vec::new())?;
+                        continue;
+                    }
                     request.method = rline[0].to_string();
                     request.path = rline[1].to_string();
                     request.version = rline[2].to_string();
                     is_first_line = false;
                 } else {
-                    if n == 2 && buf[0] == b'\r' && buf[1] == b'\n' {
-                        break;
-                    }
                     let header: Vec<&str> = str::from_utf8(&buf[0..n - 2])?
                         .split(": ")
                         .map(|s| s.trim())
@@ -76,12 +78,19 @@ fn handler(mut stream: net::TcpStream) -> Result<()> {
         reader.read_exact(&mut buf)?;
         request.body = buf;
     }
+    send_response(&mut stream, "200", "OK", request.body)?;
+    Ok(())
+}
 
-    let response_body = &request.body;
+fn send_response(
+    stream: &mut net::TcpStream,
+    status_code: &str,
+    message: &str,
+    response_body: Vec<u8>,
+) -> Result<()> {
     let mut response = Vec::new();
-    response.push("HTTP/1.1 200 OK");
-    let length = format!("Content-Length: {}", response_body.len());
-    response.push(length.as_str());
+    response.push(format!("HTTP/1.1 {} {}", status_code, message));
+    response.push(format!("Content-Length: {}", response_body.len()));
     let resp_byte = [
         format!("{}{}", response.join("\r\n"), "\r\n\r\n").as_bytes(),
         &response_body,
