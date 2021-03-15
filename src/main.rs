@@ -73,8 +73,12 @@ fn handler(stream: &mut TcpStream) -> Result<()> {
 // エラーの種別に応じてステータスコードを選択し、レスポンスを返す
 fn handle_error(stream: &mut TcpStream, e: anyhow::Error) -> Result<()> {
     match e.downcast_ref::<HTTPError>() {
-        Some(HTTPError::BadRequest(_)) => send_response(stream, "400", "Bad Request", Vec::new()),
-        Some(HTTPError::NotFound(_)) => send_response(stream, "404", "Not Found", Vec::new()),
+        Some(HTTPError::BadRequest(e)) => {
+            send_response(stream, &e.to_string(), "Bad Request", Vec::new())
+        }
+        Some(HTTPError::NotFound(e)) => {
+            send_response(stream, &e.to_string(), "Not Found", Vec::new())
+        }
         _ => send_response(stream, "500", "Internal Server Error", Vec::new()),
     }
 }
