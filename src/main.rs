@@ -1,18 +1,19 @@
-use anyhow::Result;
+use anyhow::{self, Result};
 use std::{
     collections::HashMap,
-    io::{self, prelude::*},
-    net, str, thread,
+    fs::File,
+    io::{prelude::*, BufReader},
+    net::{TcpListener, TcpStream},
+    str, thread,
 };
+use thiserror::Error;
 
-fn main() -> Result<()> {
-    let listener = net::TcpListener::bind("127.0.0.1:50000")?;
-    loop {
-        let (stream, _) = listener.accept()?;
-        thread::spawn(move || {
-            handler(stream).unwrap();
-        });
-    }
+#[derive(Debug, Error)]
+enum HTTPError {
+    #[error("{0} Bad Request")]
+    BadRequest(u16),
+    #[error("{0} Not Found")]
+    NotFound(u16),
 }
 
 struct Request {
@@ -35,9 +36,46 @@ impl Request {
     }
 }
 
-fn handler(mut stream: net::TcpStream) -> Result<()> {
+fn main() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:50000")?;
+    loop {
+        let (mut stream, _) = listener.accept()?;
+        thread::spawn(move || {
+            handler(&mut stream).unwrap();
+        });
+    }
+}
+
+fn handler(stream: &mut TcpStream) -> Result<()> {
     println!("incoming connection from {}", stream.peer_addr()?);
-    let mut reader = io::BufReader::new(&stream);
+    let request = match read_request(stream) {
+        Ok(r) => r,
+        Err(e) => {
+            handle_error(stream, e)?;
+            return Ok(());
+        }
+    };
+    let response = match create_response_body(&request) {
+        Ok(r) => r,
+        Err(e) => {
+            handle_error(stream, e)?;
+            return Ok(());
+        }
+    };
+    send_response(stream, "200", "OK", response)?;
+    Ok(())
+}
+
+fn handle_error(stream: &mut TcpStream, e: anyhow::Error) -> Result<()> {
+    match e.downcast_ref::<HTTPError>() {
+        Some(HTTPError::BadRequest(_)) => send_response(stream, "400", "Bad Request", Vec::new()),
+        Some(HTTPError::NotFound(_)) => send_response(stream, "404", "Not Found", Vec::new()),
+        _ => send_response(stream, "500", "Internal Server Error", Vec::new()),
+    }
+}
+
+fn read_request(stream: &mut TcpStream) -> Result<Request> {
+    let mut reader = BufReader::new(stream);
     let mut buf = Vec::new();
     let mut is_first_line = true;
     let mut request = Request::new();
@@ -52,9 +90,7 @@ fn handler(mut stream: net::TcpStream) -> Result<()> {
                 if is_first_line {
                     let rline: Vec<&str> = str::from_utf8(&buf[0..n - 2])?.split(' ').collect();
                     if rline.len() != 3 || !rline[2].starts_with("HTTP") {
-                        let mut s = stream.try_clone()?;
-                        send_response(&mut s, "400", "Bad Request", Vec::new())?;
-                        continue;
+                        Err(HTTPError::BadRequest(400))?
                     }
                     request.method = rline[0].to_string();
                     request.path = rline[1].to_string();
@@ -74,16 +110,29 @@ fn handler(mut stream: net::TcpStream) -> Result<()> {
         buf = Vec::new();
     }
     if let Some(n) = request.header.get("Content-Length") {
-        let mut buf = vec![0; n.parse()?];
-        reader.read_exact(&mut buf)?;
-        request.body = buf;
+        request.body = vec![0; n.parse()?];
+        reader.read_exact(&mut request.body)?;
     }
-    send_response(&mut stream, "200", "OK", request.body)?;
-    Ok(())
+    Ok(request)
+}
+
+fn create_response_body(request: &Request) -> Result<Vec<u8>> {
+    let path = match request.path.as_str() {
+        "/" => "/index.html",
+        _ => request.path.as_str(),
+    };
+    let file = match File::open(format!("./contents{}", path)) {
+        Ok(f) => f,
+        Err(_) => Err(HTTPError::NotFound(404))?,
+    };
+    let mut file_reader = BufReader::new(file);
+    let mut resp_body = Vec::new();
+    file_reader.read_to_end(&mut resp_body)?;
+    Ok(resp_body)
 }
 
 fn send_response(
-    stream: &mut net::TcpStream,
+    stream: &mut TcpStream,
     status_code: &str,
     message: &str,
     response_body: Vec<u8>,
