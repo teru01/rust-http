@@ -1,3 +1,4 @@
+use anyhow::Result;
 use std::{
     collections::HashMap,
     error,
@@ -5,7 +6,7 @@ use std::{
     net, str, thread,
 };
 
-fn main() -> Result<(), Box<dyn error::Error>> {
+fn main() -> Result<()> {
     let listener = net::TcpListener::bind("127.0.0.1:50000")?;
     loop {
         let (stream, _) = listener.accept()?;
@@ -35,7 +36,7 @@ impl Request {
     }
 }
 
-fn handler(mut stream: net::TcpStream) -> Result<(), Box<dyn error::Error>> {
+fn handler(mut stream: net::TcpStream) -> Result<()> {
     println!("incoming connection from {}", stream.peer_addr()?);
     let mut reader = io::BufReader::new(&stream);
     let mut buf = Vec::new();
@@ -78,16 +79,22 @@ fn handler(mut stream: net::TcpStream) -> Result<(), Box<dyn error::Error>> {
     }
     if let Some(n) = request.header.get("Content-Length") {
         let mut buf = vec![0; n.parse()?];
-        reader.read_exact(&mut buf);
+        reader.read_exact(&mut buf)?;
         request.body = buf;
     }
     dbg!("read completed");
-    stream.write_all(b"HTTP/1.1 200 OK\r\n")?;
-    stream.write_all(b"Connection: close\r\n")?;
-    stream.write_all(format!("Content-Length: {}\r\n", request.path.len()).as_bytes())?;
-    stream.write_all(b"\r\n")?;
-    dbg!(&request.path);
-    stream.write_all(request.path.as_bytes())?;
+
+    let response_body = &request.body;
+    let mut response = Vec::new();
+    response.push("HTTP/1.1 200 OK");
+    let length = format!("Content-Length: {}", response_body.len());
+    response.push(length.as_str());
+    let resp_byte = [
+        format!("{}{}", response.join("\r\n"), "\r\n\r\n").as_bytes(),
+        &response_body,
+    ]
+    .concat();
+    stream.write_all(&resp_byte)?;
     dbg!("response completed");
     Ok(())
 }
