@@ -1,4 +1,5 @@
 use anyhow::{self, Result};
+use once_cell::sync::Lazy;
 use regex::Regex;
 use std::{
     collections::HashMap,
@@ -8,6 +9,11 @@ use std::{
     str, thread,
 };
 use thiserror::Error;
+
+static REQUEST_LINE_PATTERN: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^(.*) (.*) (HTTP/1.[0|1])\r\n$").unwrap());
+
+static HEADER_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(.*): (.*)\r\n$").unwrap());
 
 // HTTPのステータスに基づくエラー型の定義。
 #[derive(Debug, Error)]
@@ -52,21 +58,28 @@ fn main() -> Result<()> {
 // TCPコネクションのハンドラ
 fn handler(stream: &mut TcpStream) -> Result<()> {
     println!("incoming connection from {}", stream.peer_addr()?);
-    let request = match read_request(stream) {
-        Ok(r) => r,
-        Err(e) => {
-            handle_error(stream, e)?;
-            return Ok(());
-        }
-    };
-    let response = match create_response_body(&request) {
-        Ok(r) => r,
-        Err(e) => {
-            handle_error(stream, e)?;
-            return Ok(());
-        }
-    };
-    send_response(stream, "200", "OK", response)?;
+    loop {
+        let request = match read_request(stream) {
+            Some(result) => match result {
+                Ok(r) => r,
+                Err(e) => {
+                    handle_error(stream, e)?;
+                    return Ok(());
+                }
+            },
+            None => {
+                break;
+            }
+        };
+        let response = match create_response_body(&request) {
+            Ok(r) => r,
+            Err(e) => {
+                handle_error(stream, e)?;
+                return Ok(());
+            }
+        };
+        send_response(stream, "200", "OK", response)?;
+    }
     Ok(())
 }
 
@@ -84,14 +97,17 @@ fn handle_error(stream: &mut TcpStream, e: anyhow::Error) -> Result<()> {
 }
 
 // リクエストを読み込む
-fn read_request(stream: &mut TcpStream) -> Result<Request> {
+fn read_request(stream: &mut TcpStream) -> Option<Result<Request>> {
     let mut reader = BufReader::new(stream);
     let mut request = Request::new();
-    let request_line_pattern = Regex::new(r"^(.*) (.*) (HTTP/1.[0|1])\r\n$")?;
-    let header_pattern = Regex::new(r"^(.*): (.*)\r\n$")?;
     let mut request_line = String::new();
-    reader.read_line(&mut request_line)?;
-    match request_line_pattern.captures(&request_line) {
+    if let Ok(n) = reader.read_line(&mut request_line) {
+        if n == 0 {
+            dbg!("EOF");
+            return None;
+        }
+    }
+    match REQUEST_LINE_PATTERN.captures(&request_line) {
         Some(cap) => {
             request.method = cap[1].to_string();
             request.path = cap[2].to_string();
@@ -99,7 +115,7 @@ fn read_request(stream: &mut TcpStream) -> Result<Request> {
         }
         None => {
             dbg!("request line");
-            return Err(HTTPError::BadRequest(400).into());
+            return Some(Err(HTTPError::BadRequest(400).into()));
         }
     }
     let mut header = String::new();
@@ -107,7 +123,7 @@ fn read_request(stream: &mut TcpStream) -> Result<Request> {
         if header == "\r\n" {
             break;
         }
-        match header_pattern.captures(&header) {
+        match HEADER_PATTERN.captures(&header) {
             Some(cap) => {
                 request
                     .header
@@ -115,16 +131,16 @@ fn read_request(stream: &mut TcpStream) -> Result<Request> {
             }
             None => {
                 dbg!("header");
-                return Err(HTTPError::BadRequest(400).into());
+                return Some(Err(HTTPError::BadRequest(400).into()));
             }
         }
         header = String::new();
     }
     if let Some(n) = request.header.get("Content-Length") {
-        request.body = vec![0; n.parse()?];
-        reader.read_exact(&mut request.body)?;
+        request.body = vec![0; n.parse().unwrap()];
+        reader.read_exact(&mut request.body).unwrap();
     }
-    Ok(request)
+    Some(Ok(request))
 }
 
 // ローカルからファイルを読み込む
@@ -153,6 +169,7 @@ fn send_response(
     let mut response = Vec::new();
     response.push(format!("HTTP/1.1 {} {}", status_code, message));
     response.push(format!("Content-Length: {}", response_body.len()));
+    response.push("Connection: Keep-Alive".to_string());
     let resp_byte = [
         format!("{}{}", response.join("\r\n"), "\r\n\r\n").as_bytes(),
         &response_body,
