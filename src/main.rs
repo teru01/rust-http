@@ -103,7 +103,6 @@ fn read_request(stream: &mut TcpStream) -> Option<Result<Request>> {
     let mut request_line = String::new();
     if let Ok(n) = reader.read_line(&mut request_line) {
         if n == 0 {
-            dbg!("EOF");
             return None;
         }
     }
@@ -137,8 +136,11 @@ fn read_request(stream: &mut TcpStream) -> Option<Result<Request>> {
         header = String::new();
     }
     if let Some(n) = request.header.get("Content-Length") {
-        request.body = vec![0; n.parse().unwrap()];
-        reader.read_exact(&mut request.body).unwrap();
+        request.body = match n.parse() {
+            Ok(n) => vec![0; n],
+            Err(_) => return Some(Err(HTTPError::BadRequest(400).into())),
+        };
+        reader.read_exact(&mut request.body).ok()?;
     }
     Some(Ok(request))
 }
