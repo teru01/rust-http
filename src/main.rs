@@ -102,10 +102,13 @@ fn read_request(stream: &mut TcpStream) -> Option<Result<Request>> {
     let mut request = Request::new();
     let mut request_line = String::new();
     if let Ok(n) = reader.read_line(&mut request_line) {
+        // コネクション切断の際はEOFを受信する。
+        // この時Ok(0)を読み込む
         if n == 0 {
             return None;
         }
     }
+    // リクエストラインのパース
     match REQUEST_LINE_PATTERN.captures(&request_line) {
         Some(cap) => {
             request.method = cap[1].to_string();
@@ -117,6 +120,8 @@ fn read_request(stream: &mut TcpStream) -> Option<Result<Request>> {
             return Some(Err(HTTPError::BadRequest(400).into()));
         }
     }
+
+    // ヘッダラインの読み込みとパース
     let mut header = String::new();
     while reader.read_line(&mut header).is_ok() {
         if header == "\r\n" {
@@ -135,6 +140,8 @@ fn read_request(stream: &mut TcpStream) -> Option<Result<Request>> {
         }
         header = String::new();
     }
+
+    // ボディの読み込み
     if let Some(n) = request.header.get("Content-Length") {
         request.body = match n.parse() {
             Ok(n) => vec![0; n],
@@ -171,7 +178,6 @@ fn send_response(
     let mut response = Vec::new();
     response.push(format!("HTTP/1.1 {} {}", status_code, message));
     response.push(format!("Content-Length: {}", response_body.len()));
-    response.push("Connection: Keep-Alive".to_string());
     let resp_byte = [
         format!("{}{}", response.join("\r\n"), "\r\n\r\n").as_bytes(),
         &response_body,
