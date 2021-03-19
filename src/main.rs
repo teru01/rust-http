@@ -111,6 +111,7 @@ fn read_request(stream: &mut TcpStream) -> Option<Result<Request>> {
     // リクエストラインのパース
     match REQUEST_LINE_PATTERN.captures(&request_line) {
         Some(cap) => {
+            // 本来ならGETメソッドしか受け付けないような処理が必要
             request.method = cap[1].to_string();
             request.path = cap[2].to_string();
             request.version = cap[3].to_string();
@@ -159,6 +160,7 @@ fn create_response_body(request: &Request) -> Result<Vec<u8>> {
         _ => request.path.as_str(),
     };
     let file = match File::open(format!("./contents{}", path)) {
+        // 本来ならドキュメントルート外にアクセスできないようにする必要がある
         Ok(f) => f,
         Err(_) => return Err(HTTPError::NotFound(404).into()),
     };
